@@ -1,0 +1,23 @@
+# Compiled binary
+fp32_to_int8_cuda
+
+# Chrome trace profiles (generated at runtime)
+*.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Backup files
+*Copy*
+
+# gstack
+.gstack/
+.claude/
