@@ -1,6 +1,6 @@
-# FP32 → INT8 Weight Quantization: PyTorch vs CUDA C
+# FP32 → INT8 Weight Quantization: PyTorch vs CUDA C vs ONNX Runtime
 
-A side-by-side comparison of FP32-to-INT8 weight quantization and matrix multiplication in **PyTorch** and **raw CUDA C**, with GPU profiling to show exactly which GPU cores (CUDA Cores vs Tensor Cores) each operation uses.
+A side-by-side comparison of FP32-to-INT8 weight quantization and matrix multiplication across **PyTorch**, **raw CUDA C**, and **ONNX Runtime**, with GPU profiling to show exactly which GPU cores (CUDA Cores vs Tensor Cores) each operation uses.
 
 **Tested on:** NVIDIA RTX A3000 Laptop GPU (Ampere, sm_86, 6GB VRAM, 32 SMs)
 
@@ -13,6 +13,7 @@ A side-by-side comparison of FP32-to-INT8 weight quantization and matrix multipl
 | `fp32_to_int8_pytorch.py` | Python/PyTorch | FP32 linear layer → INT8 quantization (manual + torchao) → error analysis → LLM-scale benchmarks |
 | `fp32_to_int8_profiled.py` | Python/PyTorch | GPU kernel profiling with `torch.profiler` — identifies which GPU cores each operation uses |
 | `fp32_to_int8_cuda.cu` | CUDA C | Same quantization + matmul in raw CUDA — cuBLAS SGEMM (FP32) + cuBLASLt IGEMM (INT8) + custom kernels |
+| `fp32_to_int8_onnx.py` | Python/ONNX | ONNX Runtime FP32/INT8 (CPU + GPU) vs PyTorch — export, quantize, benchmark, error comparison |
 | `Makefile` | Make | Build system for the CUDA binary |
 
 ---
@@ -50,7 +51,23 @@ python fp32_to_int8_profiled.py
 - Exports Chrome trace `.json` files (open in `chrome://tracing`)
 - Runs clean timing benchmarks (no profiler overhead)
 
-### 3. CUDA C Version (raw GPU programming)
+### 3. ONNX Runtime Version (cross-platform inference)
+
+```bash
+# Requires: onnx, onnxruntime-gpu
+pip install onnx onnxruntime-gpu
+
+python fp32_to_int8_onnx.py
+```
+
+**What it does:**
+- Step 1-2: Create FP32 model, export to ONNX format
+- Step 3: Run FP32 inference via ONNX Runtime (CPU + GPU)
+- Step 4: Dynamic INT8 quantization (`quantize_dynamic`)
+- Step 5: Error analysis — PyTorch vs ONNX (FP32 & INT8)
+- Step 6-7: LLM-scale timing benchmark across all runtimes with model size comparison
+
+### 4. CUDA C Version (raw GPU programming)
 
 ```bash
 # Install CUDA toolkit (one-time setup)
@@ -89,10 +106,15 @@ make clean
 │ INT8 torchao (PyTorch)   │ dequant → gemvx/sgemm    │ CUDA Cores *   │
 │ Quantize FP32→INT8       │ custom elementwise       │ CUDA Cores     │
 │ Dequantize INT32→FP32    │ custom elementwise       │ CUDA Cores     │
+│ ONNX FP32 GPU            │ cuBLAS sgemm (via ORT)   │ CUDA/Tensor ** │
+│ ONNX FP32 CPU            │ MLAS sgemm               │ CPU (AVX)      │
+│ ONNX INT8 CPU            │ MLAS int8 gemm           │ CPU (VNNI)     │
 └─────────────────────────┴──────────────────────────┴────────────────┘
 
-* torchao weight-only quantization dequantizes INT8→FP32 FIRST, then does
-  FP32 matmul. It does NOT do native INT8 matmul on Tensor Cores.
+*  torchao weight-only quantization dequantizes INT8→FP32 FIRST, then does
+   FP32 matmul. It does NOT do native INT8 matmul on Tensor Cores.
+** ONNX Runtime GPU uses cuBLAS under the hood — same CUDA/Tensor Core
+   routing as PyTorch (TF32 default on Ampere for GEMM).
 ```
 
 ### CUDA Cores vs Tensor Cores — What Are They?
@@ -187,17 +209,61 @@ Both PyTorch and CUDA C produce the same quantization:
 
 ---
 
-## PyTorch vs CUDA C — Head-to-Head
+### Benchmark Results — ONNX Runtime
 
-| Config | PyTorch INT8 | CUDA C INT8 | CUDA C speedup |
-|--------|-------------|------------|----------------|
-| GEMV 4K×4K (b=1) | 0.666 ms | 0.084 ms | **7.9×** |
-| GEMV 4K×11K (b=1) | 1.721 ms | 0.204 ms | **8.4×** |
-| GEMV 8K×8K (b=1) | 2.528 ms | 0.311 ms | **8.1×** |
-| GEMM 4K×11K (b=32) | 1.750 ms | 0.194 ms | **9.0×** |
-| GEMM 8K×8K (b=32) | 2.561 ms | 0.281 ms | **9.1×** |
+| Config | PT FP32 GPU | ORT FP32 GPU | ORT FP32 CPU | ORT INT8 CPU | PT INT8 torchao |
+|--------|------------|-------------|-------------|-------------|----------------|
+| Small (4K×4K, b=1) | 0.280 ms | 0.285 ms | 1.496 ms | **0.107 ms** | 0.667 ms |
+| Medium (4K×11K, b=1) | 0.725 ms | 0.729 ms | 4.520 ms | 0.783 ms | 1.711 ms |
+| Large (8K×8K, b=1) | 1.074 ms | 1.079 ms | 7.307 ms | 1.560 ms | 2.525 ms |
+| Batched (32×4K×11K) | 0.752 ms | 0.774 ms | 4.780 ms | 1.114 ms | 1.753 ms |
 
-### Why Is CUDA C 8-9× Faster?
+> **ONNX INT8 CPU beats GPU for small matrices** (0.107 ms vs 0.280 ms at 4K×4K) because MLAS has native INT8 GEMM (AVX-512/VNNI), there's no GPU launch overhead, and the 16 MB INT8 weight fits in L3 cache.
+
+### ONNX Model Size (4× Compression)
+
+| Config | FP32 | INT8 | Compression |
+|--------|------|------|-------------|
+| Small (4K×4K) | 65,552 KB | 16,401 KB | 4.00× |
+| Medium (4K×11K) | 176,171 KB | 44,076 KB | 4.00× |
+| Large (8K×8K) | 262,176 KB | 65,569 KB | 4.00× |
+
+### ONNX Quantization Error (vs PyTorch FP32 GPU)
+
+| Config | ONNX FP32 | ONNX INT8 | PT INT8 torchao |
+|--------|-----------|-----------|-----------------|
+| Small (4K×4K) | 0.000018 | 0.749 | 0.432 |
+| Medium (4K×11K) | 0.000018 | 0.732 | 0.440 |
+| Large (8K×8K) | 0.000029 | 1.106 | 0.635 |
+
+> ONNX INT8 has higher error than torchao because it quantizes **both weights AND activations** (dynamic quantization), while torchao only quantizes weights and keeps activations in FP32.
+
+---
+
+## Full Cross-Runtime Comparison — Head-to-Head
+
+### Master Inference Time Table (ms)
+
+| Config | CUDA C FP32 | CUDA C TF32 | CUDA C INT8 | PT FP32 GPU | PT INT8 torchao | ORT FP32 GPU | ORT INT8 CPU |
+|--------|------------|------------|------------|------------|----------------|-------------|-------------|
+| GEMV 4K×4K (b=1) | 0.270 | 0.269 | **0.082** | 0.280 | 0.668 | 0.285 | 0.114 |
+| GEMV 4K×11K (b=1) | 0.714 | 0.714 | **0.204** | 0.725 | 1.713 | 0.729 | 0.616 |
+| GEMV 8K×8K (b=1) | 1.061 | 1.060 | **0.312** | 1.074 | 2.524 | 1.079 | 1.263 |
+| GEMM 4K×11K (b=32) | 0.840 | 0.740 | **0.194** | 0.752 | 1.751 | 0.774 | 1.114 |
+| GEMM 8K×8K (b=32) | 1.181 | 1.088 | **0.281** | — | — | — | — |
+
+**Winner at every size: CUDA C INT8 IGEMM** (3-4× faster than any FP32 variant).
+
+### PyTorch INT8 vs CUDA C INT8 vs ONNX INT8
+
+| Config | PyTorch INT8 | CUDA C INT8 | ONNX INT8 CPU | Fastest |
+|--------|-------------|------------|--------------|---------|
+| 4K×4K (b=1) | 0.668 ms | **0.082 ms** | 0.114 ms | CUDA C (8.1×) |
+| 4K×11K (b=1) | 1.713 ms | **0.204 ms** | 0.616 ms | CUDA C (8.4×) |
+| 8K×8K (b=1) | 2.524 ms | **0.312 ms** | 1.263 ms | CUDA C (8.1×) |
+| 4K×11K (b=32) | 1.751 ms | **0.194 ms** | 1.114 ms | CUDA C (9.0×) |
+
+### Why Is CUDA C 8-9× Faster Than PyTorch INT8?
 
 ```
   PyTorch torchao (weight-only INT8):
@@ -219,17 +285,55 @@ The fundamental difference:
 1. **PyTorch torchao weight-only**: stores weights as INT8, but **dequantizes to FP32 at inference time**, then does FP32 matmul. The INT8 storage saves memory but the compute is still FP32.
 2. **CUDA C cuBLASLt**: does **true INT8 × INT8 → INT32** matrix multiplication directly on Tensor Cores. 4× less data to move AND 4× more throughput per Tensor Core cycle.
 
+### Why Is ONNX INT8 CPU So Fast for Small Matrices?
+
+```
+  ONNX INT8 CPU at 4K×4K:  0.107 ms  (2.6× FASTER than PyTorch FP32 GPU!)
+  PyTorch FP32 GPU:         0.280 ms
+
+  Three reasons:
+  1. Native INT8 GEMM: ONNX Runtime's MLAS library has hand-tuned
+     AVX-512/VNNI INT8 kernels → true INT8×INT8→INT32 on CPU
+  2. No GPU launch overhead: ~5-15 µs kernel launch + CPU↔GPU
+     transfer is significant for small matrices
+  3. Fits in L3 cache: 16 MB INT8 weight matrix stays in CPU cache
+     → compute-bound, not memory-bound
+
+  This advantage vanishes at larger sizes:
+  8K×8K: ORT INT8 CPU = 1.263 ms > PT FP32 GPU = 1.074 ms
+  (256 MB weight exceeds L3 cache → memory-bound again)
+```
+
+### Why Does ONNX FP32 GPU ≈ PyTorch FP32 GPU?
+
+Both call the same cuBLAS library under the hood. ONNX Runtime's `CUDAExecutionProvider` dispatches `sgemm`/`cublasGemmEx` — identical to what PyTorch calls. The ~1% difference is ORT's session/graph optimization overhead, which is negligible at LLM scale.
+
+---
+
+## The Big Picture: When to Use What
+
+| Scenario | Best Runtime | Why |
+|----------|-------------|-----|
+| Maximum inference speed (GPU) | CUDA C cuBLASLt INT8 | True INT8 IGEMM on Tensor Cores, no overhead |
+| Small model on CPU | ONNX INT8 CPU | Native VNNI kernels, no GPU launch cost |
+| Fit larger model in VRAM | PyTorch torchao INT8 | 4× weight compression, framework integration |
+| Cross-platform deployment | ONNX Runtime | Runs on CPU/GPU/NPU/edge with same model |
+| Production GPU serving | CUDA C / TensorRT | Lowest latency, most control |
+| Quick prototyping | PyTorch FP32 | Simplest, no quantization complexity |
+
 ---
 
 ## Prerequisites
 
-| Tool | Version | How to Install |
-|------|---------|---------------|
-| Python | 3.10+ | `conda` or system |
-| PyTorch | 2.0+ with CUDA | `pip install torch` |
-| torchao | 0.10+ | `pip install torchao` |
-| CUDA Toolkit | 12.x | `conda create -n cuda_build -c nvidia/label/cuda-12.8.0 cuda-toolkit` |
-| NVIDIA GPU | Ampere+ (sm_80+) | Required for INT8 Tensor Cores |
+| Tool | Version | How to Install | Used By |
+|------|---------|---------------|---------|
+| Python | 3.10+ | `conda` or system | All Python scripts |
+| PyTorch | 2.0+ with CUDA | `pip install torch` | pytorch, profiled |
+| torchao | 0.10+ | `pip install torchao` | pytorch, profiled, onnx |
+| ONNX | 1.14+ | `pip install onnx` | onnx |
+| ONNX Runtime GPU | 1.16+ | `pip install onnxruntime-gpu` | onnx |
+| CUDA Toolkit | 12.x | `conda create -n cuda_build -c nvidia/label/cuda-12.8.0 cuda-toolkit` | cuda.cu |
+| NVIDIA GPU | Ampere+ (sm_80+) | Required for INT8 Tensor Cores | All GPU benchmarks |
 
 ### GPU Compatibility
 
