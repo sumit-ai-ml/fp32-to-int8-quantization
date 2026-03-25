@@ -1,0 +1,7 @@
+session,operation,batch,CUDA Core,Memory/Elem,Other,Tensor Core
+FP32 TF32=OFF (b=1),GEMV,1,95.2,0.0,4.8,0.0
+FP32 TF32=ON (b=1),GEMV,1,95.2,0.0,4.8,0.0
+INT8 torchao (b=1),GEMV,1,41.6,55.6,2.8,0.0
+FP32 TF32=OFF (b=32),GEMM,32,95.1,0.1,4.8,0.0
+FP32 TF32=ON (b=32),GEMM,32,0.0,0.0,4.8,95.2
+INT8 torchao (b=32),GEMM,32,0.0,55.2,2.7,42.1

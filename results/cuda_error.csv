@@ -1,0 +1,2 @@
+method,mean_abs_error,mean_rel_error_pct
+CUDA C INT8,0.007532,1.27
