@@ -18,6 +18,7 @@ A side-by-side comparison of FP32-to-INT8 weight quantization and matrix multipl
 | `generate_plots.py` | Python | Generates static PNG plots from CSV results |
 | `generate_dashboard.py` | Python | Generates interactive Plotly HTML dashboard from CSV results |
 | `bench_utils.py` | Python | Shared utilities: kernel classifier, benchmark configs |
+| `optimize_int8.py` | Python | Optimization benchmark: FP16, torch._int_mm, torch.compile — finding the fastest PyTorch path |
 | `test_benchmarks.py` | Python | pytest test suite for data-critical functions |
 | `Makefile` | Make | Build CUDA binary + run benchmarks/dashboard/tests |
 

@@ -191,13 +191,67 @@ For real models: LLaMA-7B is ~26 GB at FP32, ~6.5 GB at INT8. That's the differe
 
 ---
 
+## Optimization: Closing the Gap with CUDA C
+
+Since PyTorch torchao INT8 was 2.3x *slower* than FP32, we tested every available optimization to find the fastest PyTorch path. Results on 4Kx4K (b=1):
+
+| Method | Time | vs FP32 | What it does |
+|--------|------|---------|-------------|
+| **FP16 (Tensor Core HMMA)** | **0.140 ms** | **1.9x faster** | `model.half()` — uses Tensor Core FP16 matmul |
+| FP32 baseline | 0.269 ms | 1.0x | Standard `nn.Linear` with TF32 |
+| CUDA C INT8 IGEMM | 0.098 ms | 2.7x faster | cuBLASLt native INT8×INT8 (unreachable from PyTorch) |
+| INT8 Weight-Only (torchao) | 0.633 ms | 2.4x slower | Dequant INT8→FP32, then FP32 GEMM |
+| INT8 Dynamic Act+Weight | 2.445 ms | 9.1x slower | Quantize activations at runtime + INT8 GEMM |
+| torch.compile | 1.852 ms | 6.9x slower | Inductor overhead dominates at small batch |
+
+For batch=32, `torch._int_mm` (native INT8 Tensor Core) becomes available:
+
+| Method | Time | vs FP32 |
+|--------|------|---------|
+| **FP16** | **0.378 ms** | **2.0x faster** |
+| torch._int_mm (raw INT8 TC) | 0.535 ms | 1.4x faster |
+| FP32 baseline | 0.739 ms | 1.0x |
+| CUDA C INT8 IGEMM | 0.220 ms | 3.4x faster |
+
+**Key findings:**
+
+1. **FP16 is the practical winner in PyTorch.** One line (`model.half()`) gives 2x speedup by routing matmul to Tensor Core HMMA. No quantization complexity needed.
+
+2. **`torch._int_mm` only works for batch >= 16.** This is PyTorch's native INT8×INT8→INT32 Tensor Core op, but it requires M (batch dimension) >= 16. For batch=1 inference (chatbot generation), it's unusable.
+
+3. **CUDA C INT8 remains 2-3x faster than any PyTorch INT8 path.** cuBLASLt handles batch=1 natively (no M >= 16 restriction). The gap is in the library, not the hardware.
+
+4. **torch.compile adds overhead for small matrices.** The Inductor's kernel launch and graph overhead exceeds the compute savings at these sizes.
+
+### Practical Recommendation
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  IF you want fast inference in PyTorch:                         │
+│    → model.half()  (FP16 on Tensor Cores, 2x faster)           │
+│                                                                 │
+│  IF you want maximum speed:                                     │
+│    → CUDA C cuBLASLt INT8 IGEMM  (3-4x faster, requires C)    │
+│                                                                 │
+│  IF you want real-world model serving:                          │
+│    → Ollama / llama.cpp  (optimized fused dequant+GEMM)        │
+│                                                                 │
+│  DO NOT use torchao INT8 weight-only for speed.                 │
+│    It's 2x slower than FP32. Use it only for memory savings.   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Summary
 
 1. **"INT8 is faster" is only true if you do real INT8 math.** CUDA C does. PyTorch torchao doesn't — it converts back to FP32.
-2. **The GPU has two types of math units.** CUDA Cores (general) and Tensor Cores (specialized). Tensor Cores only activate for batch >= 2.
-3. **CPU can beat GPU for small matrices** because of cache effects and zero launch overhead.
-4. **4x model compression is the guaranteed win.** Every INT8 approach gives exactly 4x smaller models.
-5. **~1% accuracy loss is typical.** Acceptable for inference, not for training.
+2. **FP16 is the fastest practical option in PyTorch.** One line of code, 2x speedup, no quantization complexity.
+3. **The GPU has two types of math units.** CUDA Cores (general) and Tensor Cores (specialized). Tensor Cores only activate for batch >= 2.
+4. **CPU can beat GPU for small matrices** because of cache effects and zero launch overhead.
+5. **4x model compression is the guaranteed win.** Every INT8 approach gives exactly 4x smaller models.
+6. **~1% accuracy loss is typical.** Acceptable for inference, not for training.
+7. **torch._int_mm (native INT8 Tensor Core) requires batch >= 16.** This makes it unusable for single-token generation (the most common LLM inference pattern).
 
 ---
 
@@ -238,6 +292,7 @@ All results are in `results/`:
 | `onnx_error.csv` | ONNX error + model size data |
 | `profiling.csv` | GPU core type breakdown (CUDA Core vs Tensor Core %) |
 | `ollama_timing.csv` | Ollama real model inference times + GPU allocation |
+| `optimized_timing.csv` | Optimization comparison: FP16, _int_mm, torch.compile, etc. |
 
 ---
 
