@@ -1,0 +1,3 @@
+model,family,parameters,quantization,model_size_mb,inference_ms,std_ms,avg_tokens,gpu_percent,vram_mb
+MedAIBase/MedGemma1.5:4b,gemma3,3.9B,F16,7408,336.2,9.0,2.0,60%,5622
+llama3.2:3b,llama,3.2B,Q4_K_M,1926,131.9,2.9,3.0,100%,3157

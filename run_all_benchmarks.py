@@ -583,11 +583,128 @@ print("Profiling CSV written.")
     return result.returncode == 0
 
 
+# ──────────────────────────────────────────────
+# 5. Ollama benchmark (real model inference)
+# ──────────────────────────────────────────────
+def run_ollama():
+    print("\n[5/5] Running Ollama benchmarks...")
+    try:
+        import ollama
+    except ImportError:
+        print("  ERROR: ollama package not installed. Run: pip install ollama")
+        return False
+
+    # Check if Ollama server is running
+    try:
+        model_list = ollama.list()
+    except Exception as e:
+        print(f"  ERROR: Ollama server not reachable: {e}")
+        print("  Start it with: systemctl start ollama")
+        return False
+
+    if not model_list.models:
+        print("  ERROR: No models available. Pull one with: ollama pull llama3.2:3b")
+        return False
+
+    timing_rows = []
+    import statistics
+
+    for model_entry in model_list.models:
+        model_name = model_entry.model
+        details = model_entry.details
+        quant = details.quantization_level if details else "unknown"
+        param_size = details.parameter_size if details else "unknown"
+        family = details.family if details else "unknown"
+        size_mb = model_entry.size / (1024 * 1024)
+
+        print(f"  Benchmarking: {model_name} ({quant}, {param_size})")
+
+        # Run inference benchmark: measure time for a short prompt
+        prompt = "What is 2+2? Answer in one word."
+        warmup_iters = 3
+        bench_iters = 10
+
+        # Warmup
+        warmup_ok = True
+        for _ in range(warmup_iters):
+            try:
+                ollama.generate(model=model_name, prompt=prompt,
+                                options={"num_predict": 20})
+            except Exception as e:
+                print(f"    SKIP: Inference failed: {e}")
+                warmup_ok = False
+                break
+
+        if not warmup_ok:
+            continue
+
+        # Benchmark
+        times = []
+        total_tokens = 0
+        for _ in range(bench_iters):
+            t0 = time.time()
+            resp = ollama.generate(model=model_name, prompt=prompt,
+                                   options={"num_predict": 20})
+            t1 = time.time()
+            times.append((t1 - t0) * 1000)  # ms
+            total_tokens += getattr(resp, "eval_count", 0) or 0
+
+        mean_ms = statistics.mean(times)
+        std_ms = statistics.stdev(times) if len(times) > 1 else 0.0
+        avg_tokens = total_tokens / bench_iters if bench_iters > 0 else 0
+
+        # Check GPU allocation after inference
+        gpu_pct = "unknown"
+        vram_mb = 0
+        try:
+            ps_info = ollama.ps()
+            for pm in ps_info.models:
+                if pm.model == model_name:
+                    total_size = pm.size or 1
+                    vram_size = pm.size_vram or 0
+                    gpu_pct = f"{vram_size / total_size * 100:.0f}%"
+                    vram_mb = vram_size / (1024 * 1024)
+                    break
+        except Exception:
+            pass
+
+        timing_rows.append({
+            "model": model_name,
+            "family": family,
+            "parameters": param_size,
+            "quantization": quant,
+            "model_size_mb": f"{size_mb:.0f}",
+            "inference_ms": f"{mean_ms:.1f}",
+            "std_ms": f"{std_ms:.1f}",
+            "avg_tokens": f"{avg_tokens:.1f}",
+            "gpu_percent": gpu_pct,
+            "vram_mb": f"{vram_mb:.0f}",
+        })
+        print(f"    {model_name}: {mean_ms:.1f}ms ± {std_ms:.1f}ms, "
+              f"{avg_tokens:.0f} tokens, GPU: {gpu_pct}")
+
+    if not timing_rows:
+        print("  No Ollama results collected")
+        return False
+
+    csv_path = os.path.join(RESULTS_DIR, "ollama_timing.csv")
+    with open(csv_path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=[
+            "model", "family", "parameters", "quantization", "model_size_mb",
+            "inference_ms", "std_ms", "avg_tokens", "gpu_percent", "vram_mb"
+        ])
+        w.writeheader()
+        w.writerows(timing_rows)
+
+    print("  Ollama CSV written.")
+    return True
+
+
 # ══════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════
 if __name__ == "__main__":
-    targets = sys.argv[1:] if len(sys.argv) > 1 else ["pytorch", "onnx", "cuda", "profile"]
+    targets = sys.argv[1:] if len(sys.argv) > 1 else ["pytorch", "onnx", "cuda", "profile", "ollama"]
 
     t0 = time.time()
     results = {}
@@ -600,6 +717,8 @@ if __name__ == "__main__":
         results["cuda"] = run_cuda()
     if "profile" in targets:
         results["profile"] = run_profiling()
+    if "ollama" in targets:
+        results["ollama"] = run_ollama()
 
     elapsed = time.time() - t0
     print(f"\n{'='*60}")

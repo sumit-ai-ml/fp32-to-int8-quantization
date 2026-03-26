@@ -20,7 +20,7 @@ NVCC_FLAGS := -O3 -arch=$(ARCH) \
 
 RUNTIME_LIBS := $(CUDA_LIB):$(CUDA_LIB2)
 
-.PHONY: all clean run info
+.PHONY: all clean run info benchmark plots dashboard test
 
 all: $(TARGET)
 
@@ -32,6 +32,18 @@ run: $(TARGET)
 
 clean:
 	rm -f $(TARGET)
+
+benchmark: $(TARGET)
+	python run_all_benchmarks.py
+
+plots: benchmark
+	python generate_plots.py
+
+dashboard: benchmark
+	python generate_dashboard.py
+
+test:
+	python -m pytest test_benchmarks.py -v
 
 info:
 	@echo "NVCC:      $(NVCC)"

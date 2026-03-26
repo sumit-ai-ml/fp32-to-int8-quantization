@@ -14,7 +14,12 @@ A side-by-side comparison of FP32-to-INT8 weight quantization and matrix multipl
 | `fp32_to_int8_profiled.py` | Python/PyTorch | GPU kernel profiling with `torch.profiler` — identifies which GPU cores each operation uses |
 | `fp32_to_int8_cuda.cu` | CUDA C | Same quantization + matmul in raw CUDA — cuBLAS SGEMM (FP32) + cuBLASLt IGEMM (INT8) + custom kernels |
 | `fp32_to_int8_onnx.py` | Python/ONNX | ONNX Runtime FP32/INT8 (CPU + GPU) vs PyTorch — export, quantize, benchmark, error comparison |
-| `Makefile` | Make | Build system for the CUDA binary |
+| `run_all_benchmarks.py` | Python | Orchestrator — runs all benchmarks (including Ollama) and outputs CSVs to `results/` |
+| `generate_plots.py` | Python | Generates static PNG plots from CSV results |
+| `generate_dashboard.py` | Python | Generates interactive Plotly HTML dashboard from CSV results |
+| `bench_utils.py` | Python | Shared utilities: kernel classifier, benchmark configs |
+| `test_benchmarks.py` | Python | pytest test suite for data-critical functions |
+| `Makefile` | Make | Build CUDA binary + run benchmarks/dashboard/tests |
 
 ---
 
@@ -90,6 +95,23 @@ make clean
 - Custom CUDA kernels for: quantization, dequantization, bias-add, abs-max reduction
 - Per-kernel timing with CUDA Events
 - LLM-scale benchmarks matching the PyTorch configs
+
+### 5. Run All Benchmarks + Generate Dashboard
+
+```bash
+# Run all benchmarks (PyTorch, ONNX, CUDA C, profiling, Ollama) → CSVs
+python run_all_benchmarks.py
+
+# Generate interactive HTML dashboard (requires: pip install plotly)
+python generate_dashboard.py
+# Open dashboard.html in your browser
+
+# Or use Make targets:
+make benchmark   # run all benchmarks
+make dashboard   # generate interactive HTML dashboard
+make plots       # generate static PNG plots
+make test        # run pytest test suite
+```
 
 ---
 

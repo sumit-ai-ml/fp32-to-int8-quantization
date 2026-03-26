@@ -201,6 +201,29 @@ For real models: LLaMA-7B is ~26 GB at FP32, ~6.5 GB at INT8. That's the differe
 
 ---
 
+## Real-World Context: Running Quantized Models via Ollama
+
+The synthetic benchmarks above explain *why* performance differs at the kernel level. But what happens when you run a *real* quantized model through a serving framework?
+
+We tested two models via **Ollama** on the same RTX A3000 GPU:
+
+| Model | Quantization | Size | Inference | GPU Offload | VRAM Used |
+|-------|-------------|------|-----------|-------------|-----------|
+| llama3.2:3b | **Q4_K_M (4-bit)** | 1.9 GB | ~132 ms | 100% GPU | 3.1 GB |
+| MedGemma1.5:4b | F16 (full) | 7.4 GB | ~336 ms | 60% GPU | 5.6 GB |
+
+**Key observations:**
+
+1. **Q4_K_M is a different quantization scheme than INT8.** It uses 4-bit mixed precision (some blocks at higher precision for important weights). This is what GGUF models use in practice.
+
+2. **The quantized model (llama3.2 Q4_K_M) is 2.5x faster** than the full-precision model (MedGemma F16). This matches the synthetic benchmark pattern: less data to move = faster inference.
+
+3. **VRAM is the bottleneck, not compute.** The Q4_K_M model fits entirely in GPU (100% offload, 3.1 GB). MedGemma at 7.4 GB exceeds the 6 GB VRAM limit, so Ollama splits it between GPU (60%) and CPU (40%). This CPU fallback is what makes it slower.
+
+4. **Ollama automatically optimizes GPU offloading.** It loads as many layers as fit in VRAM and runs the rest on CPU. No manual configuration needed.
+
+---
+
 ## Data Files
 
 All results are in `results/`:
@@ -214,7 +237,9 @@ All results are in `results/`:
 | `onnx_timing.csv` | ONNX Runtime FP32/INT8 CPU/GPU inference times |
 | `onnx_error.csv` | ONNX error + model size data |
 | `profiling.csv` | GPU core type breakdown (CUDA Core vs Tensor Core %) |
+| `ollama_timing.csv` | Ollama real model inference times + GPU allocation |
 
 ---
 
 *Generated from real benchmark data. Run `python run_all_benchmarks.py` to reproduce.*
+*Interactive dashboard: `python generate_dashboard.py` → open `dashboard.html`*
